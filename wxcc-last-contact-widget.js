@@ -1,4 +1,4 @@
-#version4
+// version5 - Display DNIS in Agent Desktop Header
 (function () {
   if (customElements.get("wxcc-last-contact-widget")) return;
 
@@ -8,67 +8,38 @@
       :host {
         display: inline-flex;
         align-items: center;
-        height: 64px;
-        font-family: 'CiscoSansTT Regular', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        font-family: "CiscoSansTT", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-size: 12px;
+        color: #ccc;
+        padding: 0 8px;
       }
-      .lc-container {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 8px;
-        padding: 6px 14px;
-        height: 36px;
-        box-sizing: border-box;
-        transition: background 0.2s ease;
-      }
-      .lc-container:hover { background: rgba(255, 255, 255, 0.14); }
-      .lc-container.no-call { opacity: 0.4; }
-      .lc-icon {
+      .lc-wrapper {
         display: flex;
         align-items: center;
-        justify-content: center;
-        color: #00BCEB;
-        flex-shrink: 0;
+        gap: 6px;
       }
-      .lc-icon svg { width: 16px; height: 16px; }
-      .lc-content {
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        line-height: 1.2;
+      .lc-wrapper.no-call {
+        opacity: 0.4;
       }
       .lc-label {
-        font-size: 9px;
         font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: rgba(255,255,255,0.5);
-        white-space: nowrap;
+        color: #aaa;
       }
       .lc-value {
-        font-size: 12px;
-        font-weight: 500;
-        color: #ffffff;
-        white-space: nowrap;
+        font-weight: 700;
+        color: #fff;
       }
-      .lc-value.empty { color: rgba(255,255,255,0.4); font-style: italic; }
-      .lc-value.highlight { color: #00BCEB; }
+      .lc-value.highlight {
+        color: #07C160;
+      }
+      .lc-value.empty {
+        color: #999;
+        font-weight: 400;
+      }
     </style>
-    <div class="lc-container no-call" id="lc-wrapper">
-      <div class="lc-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="16" y1="2" x2="16" y2="6"></line>
-          <line x1="8" y1="2" x2="8" y2="6"></line>
-          <line x1="3" y1="10" x2="21" y2="10"></line>
-        </svg>
-      </div>
-      <div class="lc-content">
-        <span class="lc-label">Last Contacted</span>
-        <span class="lc-value empty" id="lc-value">—</span>
-      </div>
+    <div id="lc-wrapper" class="lc-wrapper no-call">
+      <span class="lc-label">DNIS:</span>
+      <span id="lc-value" class="lc-value empty">&mdash;</span>
     </div>
   `;
 
@@ -81,8 +52,10 @@
       this._wrapperEl = this.shadowRoot.getElementById("lc-wrapper");
     }
 
+    // ---------------------------------------------------------------
     // Receives $STORE.agentContact.taskSelected
-    // taskSelected is the full task object — interaction is nested inside it
+    // taskSelected is the full task object; interaction is nested inside
+    // ---------------------------------------------------------------
     set interactionData(val) {
       console.log("[WxccLastContactWidget] taskSelected received:", JSON.stringify(val));
 
@@ -97,16 +70,44 @@
 
       console.log("[WxccLastContactWidget] CAD keys:", Object.keys(cad));
 
-      const raw =
-        cad["lastContactDate"]?.value ||
-        cad["LastContactDate"]?.value ||
-        cad["last_contact_date"]?.value ||
+      // -----------------------------------------------------------
+      // 1. Extract the DNIS from CAD variables or interaction properties
+      // -----------------------------------------------------------
+      const dnis =
+        cad["DNIS"]?.value ||
+        cad["dnis"]?.value ||
+        cad["dn"]?.value ||
+        cad["DN"]?.value ||
+        cad["dialedNumber"]?.value ||
+        cad["DialedNumber"]?.value ||
+        interaction.DNIS ||
+        interaction.dnis ||
+        interaction.dn ||
+        interaction.DN ||
         null;
 
-      console.log("[WxccLastContactWidget] lastContactDate:", raw);
+      console.log("[WxccLastContactWidget] DNIS:", dnis);
 
-      if (raw) {
-        this._setDate(raw);
+      if (dnis) {
+        this._setDnis(dnis);
+
+        // ---------------------------------------------------------
+        // 2. CRM Lookup placeholder
+        //    Once ready, uncomment and update the URL below to
+        //    perform a CRM lookup using the extracted DNIS.
+        // ---------------------------------------------------------
+        // fetch(`https://your-crm.example.com/api/lookup?dnis=${encodeURIComponent(dnis)}`)
+        //   .then(response => response.json())
+        //   .then(data => {
+        //     if (data.lastContactDate) {
+        //       this._setLastContactDate(data.lastContactDate);
+        //     }
+        //   })
+        //   .catch(err => {
+        //     console.error("[WxccLastContactWidget] CRM lookup failed:", err);
+        //   });
+        // ---------------------------------------------------------
+
       } else {
         this._setNoData();
       }
@@ -118,17 +119,11 @@
       if (!val) this._clearDisplay();
     }
 
-    _setDate(raw) {
-      let display = raw;
-      try {
-        const d = new Date(raw);
-        if (!isNaN(d.getTime())) {
-          display = d.toLocaleDateString("en-GB", {
-            day: "2-digit", month: "short", year: "numeric"
-          });
-        }
-      } catch (_) {}
-      this._valueEl.textContent = display;
+    // ---------------------------------------------------------------
+    // Display helpers
+    // ---------------------------------------------------------------
+    _setDnis(dnis) {
+      this._valueEl.textContent = dnis;
       this._valueEl.className = "lc-value highlight";
       this._wrapperEl.classList.remove("no-call");
     }
@@ -140,12 +135,12 @@
     }
 
     _clearDisplay() {
-      this._valueEl.textContent = "—";
+      this._valueEl.textContent = "\u2014";
       this._valueEl.className = "lc-value empty";
       this._wrapperEl.classList.add("no-call");
     }
   }
 
   customElements.define("wxcc-last-contact-widget", WxccLastContactWidget);
-  console.log("[WxccLastContactWidget] Registered successfully v4");
+  console.log("[WxccLastContactWidget] Registered successfully v5");
 })();
