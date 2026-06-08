@@ -1,4 +1,4 @@
-// version10 - DNIS-only extraction (no ANI fallback)
+// version11 - DNIS display + Airtable CRM lookup for Last Contact Date
 (function () {
   if (customElements.get("wxcc-last-contact-widget")) return;
 
@@ -36,33 +36,63 @@
         color: #999;
         font-weight: 400;
       }
-      .lc-value.warn {
-        color: #FFA500;
+      .lc-separator {
+        color: #666;
+        margin: 0 4px;
+      }
+      .lc-contact-today {
+        color: #FF6B35;
+        font-weight: 700;
+      }
+      .lc-contact-past {
+        color: #07C160;
+        font-weight: 600;
+      }
+      .lc-contact-none {
+        color: #999;
+        font-style: italic;
+        font-weight: 400;
+      }
+      .lc-contact-loading {
+        color: #999;
+        font-style: italic;
         font-weight: 400;
       }
     </style>
     <div id="lc-wrapper" class="lc-wrapper no-call">
       <span class="lc-label">DNIS:</span>
-      <span id="lc-value" class="lc-value empty">&mdash;</span>
+      <span id="lc-dnis" class="lc-value empty">&mdash;</span>
+      <span id="lc-separator" class="lc-separator" style="display:none;">|</span>
+      <span id="lc-contact-label" class="lc-label" style="display:none;">Last Contact:</span>
+      <span id="lc-contact" style="display:none;"></span>
     </div>
   `;
+
+  // Airtable configuration
+  const AIRTABLE_BASE = "appPmucupoffk2wmY";
+  const AIRTABLE_TABLE = "Clients";
+  const AIRTABLE_API_KEY = "patYqdB2ZUbYN9aCP.b3a72fd1165c7d269f81e802503859e13792dbd095447b34f3c60957ecbc68e8";
+  const AIRTABLE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}`;
 
   class WxccLastContactWidget extends HTMLElement {
     constructor() {
       super();
       this.attachShadow({ mode: "open" });
       this.shadowRoot.appendChild(template.content.cloneNode(true));
-      this._valueEl = this.shadowRoot.getElementById("lc-value");
+      this._dnisEl = this.shadowRoot.getElementById("lc-dnis");
       this._wrapperEl = this.shadowRoot.getElementById("lc-wrapper");
+      this._separatorEl = this.shadowRoot.getElementById("lc-separator");
+      this._contactLabelEl = this.shadowRoot.getElementById("lc-contact-label");
+      this._contactEl = this.shadowRoot.getElementById("lc-contact");
       this._currentDnis = null;
       this._agentContactRef = null;
       this._taskMapRef = null;
       this._pollTimer = null;
-      console.log("[WxccLastContactWidget] Constructor (v10)");
+      console.log("[WxccLastContactWidget] Constructor (v11)");
     }
 
     connectedCallback() {
-      console.log("[WxccLastContactWidget] Mounted (v10)");
+      console.log("[WxccLastContactWidget] Mounted (v11)");
     }
 
     disconnectedCallback() {
@@ -81,25 +111,13 @@
       try {
         const keys = Object.keys(obj);
         console.log(`[WXCC] ${label} [${keys.length} keys]:`, keys);
-        keys.forEach((k) => {
-          const v = obj[k];
-          if (v && typeof v === "object") {
-            try {
-              console.log(`[WXCC]   .${k} => [obj] keys:`, Object.keys(v));
-            } catch (e) {
-              console.log(`[WXCC]   .${k} => [obj] (keys unreadable)`);
-            }
-          } else {
-            console.log(`[WXCC]   .${k} =>`, v);
-          }
-        });
       } catch (e) {
-        console.log(`[WXCC] ${label}: keys failed (${e.message}), raw:`, obj);
+        console.log(`[WXCC] ${label}: keys failed`, obj);
       }
     }
 
     // =================================================================
-    // Try MobX ObservableMap methods on a map-like object
+    // MobX ObservableMap reader
     // =================================================================
     _tryReadMap(mapObj, label) {
       if (!mapObj) return [];
@@ -107,81 +125,49 @@
 
       try { console.log(`[WXCC] ${label}.size =>`, mapObj.size); } catch (e) {}
 
-      // .toJSON()
       try {
         if (typeof mapObj.toJSON === "function") {
           const json = mapObj.toJSON();
-          console.log(`[WXCC] ${label}.toJSON():`, json);
           if (json && typeof json === "object") {
-            Object.entries(json).forEach(([id, task]) => {
-              tasks.push({ id, task });
-            });
+            Object.entries(json).forEach(([id, task]) => { tasks.push({ id, task }); });
           }
         }
-      } catch (e) {
-        console.log(`[WXCC] ${label}.toJSON() failed: ${e.message}`);
-      }
+      } catch (e) {}
 
-      // .forEach()
       try {
         if (typeof mapObj.forEach === "function") {
-          mapObj.forEach((value, key) => {
-            console.log(`[WXCC] ${label}.forEach => key: ${key}`, typeof value);
-            tasks.push({ id: key, task: value });
-          });
+          mapObj.forEach((value, key) => { tasks.push({ id: key, task: value }); });
         }
-      } catch (e) {
-        console.log(`[WXCC] ${label}.forEach() failed: ${e.message}`);
-      }
+      } catch (e) {}
 
-      // .entries()
       try {
         if (typeof mapObj.entries === "function") {
-          const entries = mapObj.entries();
-          for (const [key, value] of entries) {
-            console.log(`[WXCC] ${label}.entries => key: ${key}`, typeof value);
+          for (const [key, value] of mapObj.entries()) {
             tasks.push({ id: key, task: value });
           }
         }
-      } catch (e) {
-        console.log(`[WXCC] ${label}.entries() failed: ${e.message}`);
-      }
+      } catch (e) {}
 
-      // .values()
       try {
         if (typeof mapObj.values === "function") {
-          const values = mapObj.values();
           let idx = 0;
-          for (const value of values) {
+          for (const value of mapObj.values()) {
             tasks.push({ id: `val_${idx}`, task: value });
             idx++;
           }
         }
-      } catch (e) {
-        console.log(`[WXCC] ${label}.values() failed: ${e.message}`);
-      }
+      } catch (e) {}
 
-      // .keys() + .get()
       try {
-        if (typeof mapObj.keys === "function") {
-          const keys = mapObj.keys();
+        if (typeof mapObj.keys === "function" && typeof mapObj.get === "function") {
           const keyArr = [];
-          for (const k of keys) { keyArr.push(k); }
-          console.log(`[WXCC] ${label}.keys():`, keyArr);
-          if (typeof mapObj.get === "function") {
-            keyArr.forEach(k => {
-              try {
-                const val = mapObj.get(k);
-                tasks.push({ id: k, task: val });
-              } catch (e) {}
-            });
-          }
+          for (const k of mapObj.keys()) { keyArr.push(k); }
+          keyArr.forEach(k => {
+            try { tasks.push({ id: k, task: mapObj.get(k) }); } catch (e) {}
+          });
         }
-      } catch (e) {
-        console.log(`[WXCC] ${label}.keys() failed: ${e.message}`);
-      }
+      } catch (e) {}
 
-      // Array.from()
       try {
         const arr = Array.from(mapObj);
         arr.forEach(entry => {
@@ -191,15 +177,12 @@
         });
       } catch (e) {}
 
-      // data_ (MobX internal)
       try {
-        if (mapObj.data_ && typeof mapObj.data_ === "object") {
-          if (mapObj.data_ instanceof Map) {
-            mapObj.data_.forEach((value, key) => {
-              const unwrapped = value?.value_ || value?.get?.() || value;
-              tasks.push({ id: key, task: unwrapped });
-            });
-          }
+        if (mapObj.data_ && mapObj.data_ instanceof Map) {
+          mapObj.data_.forEach((value, key) => {
+            const unwrapped = value?.value_ || value?.get?.() || value;
+            tasks.push({ id: key, task: unwrapped });
+          });
         }
       } catch (e) {}
 
@@ -274,7 +257,6 @@
       const poll = () => {
         attempts++;
         if (this._currentDnis) {
-          console.log("[WXCC] DNIS found, stopping poll");
           this._stopPolling();
           return;
         }
@@ -288,43 +270,26 @@
 
         const ac = this._agentContactRef;
         if (ac) {
-          // taskSelected
           try {
             if (ac.taskSelected) {
-              console.log("[WXCC] Poll: ac.taskSelected found!");
               this._processTask(ac.taskSelected, "poll.taskSelected");
             }
           } catch (e) {}
 
-          // selectedTaskId
-          try {
-            const stid = ac.selectedTaskId;
-            if (stid) console.log("[WXCC] Poll: selectedTaskId =>", stid);
-          } catch (e) {}
-
-          // taskMap
           try {
             const tm = ac.taskMap || this._taskMapRef;
             if (tm) {
               const tasks = this._tryReadMap(tm, `poll.taskMap[${attempts}]`);
               tasks.forEach(({ id, task }) => this._processTask(task, `poll.taskMap["${id}"]`));
             }
-          } catch (e) {
-            console.log("[WXCC] Poll taskMap read error:", e.message);
-          }
+          } catch (e) {}
 
-          // Other possible properties
           try {
-            const possibleKeys = [
-              "outdialContactData", "previewContactData", "contactData",
-              "currentContact", "activeContact", "campaignContact"
-            ];
-            possibleKeys.forEach(k => {
+            ["outdialContactData", "previewContactData", "contactData",
+             "currentContact", "activeContact", "campaignContact"
+            ].forEach(k => {
               try {
-                if (ac[k]) {
-                  console.log(`[WXCC] Poll: ac.${k} found!`);
-                  this._processTask(ac[k], `poll.ac.${k}`);
-                }
+                if (ac[k]) { this._processTask(ac[k], `poll.ac.${k}`); }
               } catch (e) {}
             });
           } catch (e) {}
@@ -343,120 +308,186 @@
     }
 
     // =================================================================
-    // Process a task object — DNIS-ONLY extraction (no ANI fallback)
+    // Process a task — DNIS-ONLY extraction (no ANI)
     // =================================================================
     _processTask(task, source) {
       if (!task || typeof task !== "object") return;
-      console.log(`[WXCC] [${source}] Processing task`);
 
       let dnis = null;
 
       try {
         const ix = task.interaction || task;
 
-        // --- 1. CAD variables (highest priority for campaign DNIS) ---
+        // 1. CAD variables
         try {
           const cad = ix.callAssociatedData || ix.CAD || {};
           const cadKeys = Object.keys(cad);
           if (cadKeys.length > 0) {
-            console.log(`[WXCC] [${source}] CAD keys:`, cadKeys);
-            // DNIS-only CAD keys — strict order, no ANI
             const dnisLookups = [
-              "DNIS", "dnis",
-              "dn", "DN",
-              "dialedNumber", "DialedNumber",
-              "OutDialNumber", "outDialNumber", "outDial",
-              "BN_NUMBER", "bn_number",
-              "CampaignPhoneNumber", "campaignPhoneNumber",
-              "destination", "Destination"
+              "DNIS", "dnis", "dn", "DN", "dialedNumber", "DialedNumber",
+              "OutDialNumber", "outDialNumber", "outDial", "BN_NUMBER", "bn_number",
+              "CampaignPhoneNumber", "campaignPhoneNumber", "destination", "Destination"
             ];
             for (const k of dnisLookups) {
               if (!dnis && cad[k]) {
                 const v = typeof cad[k] === "object" ? cad[k].value : cad[k];
-                if (v) { dnis = v; console.log(`[WXCC] [${source}] DNIS from CAD.${k}: ${v}`); break; }
+                if (v) { dnis = v; break; }
               }
             }
           }
         } catch (e) {}
 
-        // --- 2. callProcessingDetails (DNIS-only fields) ---
+        // 2. callProcessingDetails
         try {
           const cpd = ix.callProcessingDetails;
           if (cpd && !dnis) {
-            console.log(`[WXCC] [${source}] callProcessingDetails found`);
             dnis = cpd.dnis || cpd.DNIS || cpd.dialedNumber || cpd.outDialNumber ||
                    cpd.dn || cpd.DN || null;
-            if (dnis) console.log(`[WXCC] [${source}] DNIS from CPD: ${dnis}`);
           }
         } catch (e) {}
 
-        // --- 3. interaction-level properties (DNIS-only) ---
+        // 3. interaction-level
         if (!dnis) {
           dnis = ix.DNIS || ix.dnis || ix.dn || ix.DN ||
                  ix.dialedNumber || ix.outDialNumber || ix.destAgentAddress || null;
-          if (dnis) console.log(`[WXCC] [${source}] DNIS from interaction: ${dnis}`);
         }
 
-        // --- 4. mediaProperties (DNIS-only) ---
+        // 4. mediaProperties
         try {
           const mp = ix.mediaProperties;
           if (mp && !dnis) {
             dnis = mp.DNIS || mp.dnis || mp.DN || mp.dn || null;
-            if (dnis) console.log(`[WXCC] [${source}] DNIS from mediaProperties: ${dnis}`);
           }
         } catch (e) {}
 
-      } catch (e) {
-        console.log(`[WXCC] [${source}] interaction level error:`, e.message);
-      }
+      } catch (e) {}
 
-      // --- 5. task top-level (DNIS-only) ---
+      // 5. task top-level
       if (!dnis) {
         dnis = task.DNIS || task.dnis || task.dn || task.DN ||
                task.outDialNumber || task.dialNumber || task.destination || null;
-        if (dnis) console.log(`[WXCC] [${source}] DNIS from task top-level: ${dnis}`);
       }
 
-      console.log(`[WXCC] [${source}] Resolved DNIS:`, dnis);
-
       if (dnis && dnis !== this._currentDnis) {
+        console.log(`[WXCC] [${source}] DNIS found: ${dnis}`);
         this._currentDnis = dnis;
         this._setDnis(dnis);
         this._stopPolling();
-
-        // ---------------------------------------------------------
-        // CRM Lookup placeholder
-        // ---------------------------------------------------------
-        // fetch(`https://your-crm.example.com/api/lookup?dnis=${encodeURIComponent(dnis)}`)
-        //   .then(r => r.json())
-        //   .then(data => { /* update display */ })
-        //   .catch(err => console.error("[WXCC] CRM lookup failed:", err));
-        // ---------------------------------------------------------
+        this._performCrmLookup(dnis);
       }
+    }
+
+    // =================================================================
+    // Airtable CRM Lookup
+    // =================================================================
+    _performCrmLookup(dnis) {
+      console.log("[WXCC] Starting CRM lookup for DNIS:", dnis);
+
+      // Show loading state
+      this._showContactSection();
+      this._contactEl.textContent = "Looking up...";
+      this._contactEl.className = "lc-contact-loading";
+
+      // Build Airtable filter URL
+      const filter = `{phoneNumber} = '${dnis}'`;
+      const params = new URLSearchParams({ filterByFormula: filter });
+      const url = `${AIRTABLE_URL}?${params.toString()}`;
+
+      console.log("[WXCC] CRM URL:", url);
+
+      fetch(url, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${AIRTABLE_API_KEY}`,
+          "Content-Type": "application/json"
+        }
+      })
+        .then(resp => {
+          console.log("[WXCC] CRM response status:", resp.status);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          return resp.json();
+        })
+        .then(data => {
+          console.log("[WXCC] CRM response:", JSON.stringify(data));
+
+          if (!data.records || data.records.length === 0) {
+            console.log("[WXCC] No CRM record found for DNIS:", dnis);
+            this._contactEl.textContent = "No record";
+            this._contactEl.className = "lc-contact-none";
+            return;
+          }
+
+          const fields = data.records[0].fields;
+          const lastContactStr = fields.lastContact;
+          console.log("[WXCC] lastContact field:", lastContactStr);
+
+          if (!lastContactStr) {
+            this._contactEl.textContent = "Never contacted";
+            this._contactEl.className = "lc-contact-none";
+            return;
+          }
+
+          // Parse and format the date
+          const lastContactDate = new Date(lastContactStr + "T00:00:00");
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+
+          const isToday = lastContactDate.getTime() === today.getTime();
+
+          // Format: "04 Jun 2026"
+          const formatted = lastContactDate.toLocaleDateString("en-GB", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric"
+          });
+
+          if (isToday) {
+            this._contactEl.textContent = `${formatted} (Today)`;
+            this._contactEl.className = "lc-contact-today";
+            console.log("[WXCC] Contact was TODAY");
+          } else {
+            this._contactEl.textContent = formatted;
+            this._contactEl.className = "lc-contact-past";
+            console.log("[WXCC] Last contact:", formatted);
+          }
+        })
+        .catch(err => {
+          console.error("[WXCC] CRM lookup failed:", err);
+          this._contactEl.textContent = "Lookup failed";
+          this._contactEl.className = "lc-contact-none";
+        });
     }
 
     // =================================================================
     // Display helpers
     // =================================================================
     _setDnis(dnis) {
-      this._valueEl.textContent = dnis;
-      this._valueEl.className = "lc-value highlight";
+      this._dnisEl.textContent = dnis;
+      this._dnisEl.className = "lc-value highlight";
       this._wrapperEl.classList.remove("no-call");
     }
 
-    _setNotFound() {
-      this._valueEl.textContent = "DNIS not found";
-      this._valueEl.className = "lc-value warn";
-      this._wrapperEl.classList.remove("no-call");
+    _showContactSection() {
+      this._separatorEl.style.display = "";
+      this._contactLabelEl.style.display = "";
+      this._contactEl.style.display = "";
+    }
+
+    _hideContactSection() {
+      this._separatorEl.style.display = "none";
+      this._contactLabelEl.style.display = "none";
+      this._contactEl.style.display = "none";
+      this._contactEl.textContent = "";
     }
 
     _clearDisplay() {
-      this._valueEl.textContent = "\u2014";
-      this._valueEl.className = "lc-value empty";
+      this._dnisEl.textContent = "\u2014";
+      this._dnisEl.className = "lc-value empty";
       this._wrapperEl.classList.add("no-call");
+      this._hideContactSection();
     }
   }
 
   customElements.define("wxcc-last-contact-widget", WxccLastContactWidget);
-  console.log("[WxccLastContactWidget] Registered successfully v10");
+  console.log("[WxccLastContactWidget] Registered successfully v11");
 })();
