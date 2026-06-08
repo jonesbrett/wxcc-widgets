@@ -1,5 +1,5 @@
+#version4
 (function () {
-  // Guard: prevent re-registration if script loads twice
   if (customElements.get("wxcc-last-contact-widget")) return;
 
   const template = document.createElement("template");
@@ -23,12 +23,8 @@
         box-sizing: border-box;
         transition: background 0.2s ease;
       }
-      .lc-container:hover {
-        background: rgba(255, 255, 255, 0.14);
-      }
-      .lc-container.no-call {
-        opacity: 0.4;
-      }
+      .lc-container:hover { background: rgba(255, 255, 255, 0.14); }
+      .lc-container.no-call { opacity: 0.4; }
       .lc-icon {
         display: flex;
         align-items: center;
@@ -36,10 +32,7 @@
         color: #00BCEB;
         flex-shrink: 0;
       }
-      .lc-icon svg {
-        width: 16px;
-        height: 16px;
-      }
+      .lc-icon svg { width: 16px; height: 16px; }
       .lc-content {
         display: flex;
         flex-direction: column;
@@ -60,15 +53,9 @@
         color: #ffffff;
         white-space: nowrap;
       }
-      .lc-value.empty {
-        color: rgba(255,255,255,0.4);
-        font-style: italic;
-      }
-      .lc-value.highlight {
-        color: #00BCEB;
-      }
+      .lc-value.empty { color: rgba(255,255,255,0.4); font-style: italic; }
+      .lc-value.highlight { color: #00BCEB; }
     </style>
-
     <div class="lc-container no-call" id="lc-wrapper">
       <div class="lc-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -94,25 +81,20 @@
       this._wrapperEl = this.shadowRoot.getElementById("lc-wrapper");
     }
 
-    // Receives $STORE.agentContact.taskSelected.interaction
+    // Receives $STORE.agentContact.taskSelected
+    // taskSelected is the full task object — interaction is nested inside it
     set interactionData(val) {
-      console.log("[WxccLastContactWidget] interactionData received:", JSON.stringify(val));
-      this._processInteraction(val);
-    }
+      console.log("[WxccLastContactWidget] taskSelected received:", JSON.stringify(val));
 
-    // Receives $STORE.agentContact.isActiveCall
-    set isCallInProgress(val) {
-      console.log("[WxccLastContactWidget] isCallInProgress:", val);
-      if (!val) this._clearDisplay();
-    }
-
-    _processInteraction(interaction) {
-      if (!interaction) {
+      if (!val) {
         this._clearDisplay();
         return;
       }
 
+      // taskSelected can contain the interaction directly or nested under .interaction
+      const interaction = val.interaction || val;
       const cad = interaction.callAssociatedData || interaction.CAD || {};
+
       console.log("[WxccLastContactWidget] CAD keys:", Object.keys(cad));
 
       const raw =
@@ -130,15 +112,19 @@
       }
     }
 
+    // Receives $STORE.agentContact.isActiveCall
+    set isCallInProgress(val) {
+      console.log("[WxccLastContactWidget] isCallInProgress:", val);
+      if (!val) this._clearDisplay();
+    }
+
     _setDate(raw) {
       let display = raw;
       try {
         const d = new Date(raw);
         if (!isNaN(d.getTime())) {
           display = d.toLocaleDateString("en-GB", {
-            day: "2-digit",
-            month: "short",
-            year: "numeric",
+            day: "2-digit", month: "short", year: "numeric"
           });
         }
       } catch (_) {}
@@ -161,5 +147,5 @@
   }
 
   customElements.define("wxcc-last-contact-widget", WxccLastContactWidget);
-  console.log("[WxccLastContactWidget] Registered successfully");
+  console.log("[WxccLastContactWidget] Registered successfully v4");
 })();
