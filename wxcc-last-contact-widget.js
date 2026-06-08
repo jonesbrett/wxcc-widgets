@@ -1,4 +1,4 @@
-// version7 - WxCC Desktop SDK event-driven DNIS extraction
+// version8 - Multi-binding diagnostic DNIS extraction
 (function () {
   if (customElements.get("wxcc-last-contact-widget")) return;
 
@@ -54,202 +54,159 @@
       this.shadowRoot.appendChild(template.content.cloneNode(true));
       this._valueEl = this.shadowRoot.getElementById("lc-value");
       this._wrapperEl = this.shadowRoot.getElementById("lc-wrapper");
-      this._sdkPollTimer = null;
-      this._sdkReady = false;
       this._currentDnis = null;
-      console.log("[WxccLastContactWidget] Constructor called (v7)");
+      console.log("[WxccLastContactWidget] Constructor called (v8)");
     }
 
     connectedCallback() {
-      console.log("[WxccLastContactWidget] Mounted to DOM (v7)");
-      this._startSDKDiscovery();
+      console.log("[WxccLastContactWidget] Mounted to DOM (v8)");
     }
 
     disconnectedCallback() {
       console.log("[WxccLastContactWidget] Removed from DOM");
-      if (this._sdkPollTimer) {
-        clearInterval(this._sdkPollTimer);
-        this._sdkPollTimer = null;
-      }
     }
 
     // =================================================================
-    // SDK Discovery — poll until Desktop SDK is available
+    // Debug helper — logs keys 2 levels deep
     // =================================================================
-    _startSDKDiscovery() {
-      let attempts = 0;
-      const maxAttempts = 60; // 30 seconds at 500ms intervals
-
-      this._sdkPollTimer = setInterval(() => {
-        attempts++;
-        if (this._sdkReady) {
-          clearInterval(this._sdkPollTimer);
-          this._sdkPollTimer = null;
-          return;
-        }
-
-        if (attempts > maxAttempts) {
-          console.warn("[WxccLastContactWidget] SDK not found after 30s — giving up polling");
-          clearInterval(this._sdkPollTimer);
-          this._sdkPollTimer = null;
-          return;
-        }
-
-        // Check for Desktop SDK
-        if (window.Desktop) {
-          console.log("[WxccLastContactWidget] Desktop SDK found on attempt", attempts);
-          clearInterval(this._sdkPollTimer);
-          this._sdkPollTimer = null;
-          this._sdkReady = true;
-          this._initSDK();
-        }
-      }, 500);
-    }
-
-    _initSDK() {
-      this._discoverSDK();
-
-      // Initialize the SDK config if possible
-      try {
-        if (window.Desktop.config && typeof window.Desktop.config.init === "function") {
-          window.Desktop.config.init({
-            widgetName: "wxcc-last-contact-widget",
-            widgetProvider: "custom"
-          });
-          console.log("[WxccLastContactWidget] Desktop.config.init() called");
-        }
-      } catch (e) {
-        console.warn("[WxccLastContactWidget] Desktop.config.init() failed:", e.message);
-      }
-
-      this._subscribeToEvents();
-    }
-
-    // =================================================================
-    // Discover and log all available SDK modules
-    // =================================================================
-    _discoverSDK() {
-      try {
-        const D = window.Desktop;
-        console.log("[WxccLastContactWidget] Desktop keys:", Object.keys(D));
-
-        if (D.agentContact) {
-          const ac = D.agentContact;
-          console.log("[WxccLastContactWidget] Desktop.agentContact keys:", Object.keys(ac));
-          // Log methods vs properties
-          Object.keys(ac).forEach(k => {
-            console.log(`[WxccLastContactWidget]   agentContact.${k} => [${typeof ac[k]}]`);
-          });
-        } else {
-          console.log("[WxccLastContactWidget] Desktop.agentContact is not available");
-        }
-
-        if (D.agentStateInfo) {
-          console.log("[WxccLastContactWidget] Desktop.agentStateInfo keys:", Object.keys(D.agentStateInfo));
-        }
-
-        if (D.dialer) {
-          console.log("[WxccLastContactWidget] Desktop.dialer keys:", Object.keys(D.dialer));
-        }
-
-        if (D.screenpop) {
-          console.log("[WxccLastContactWidget] Desktop.screenpop keys:", Object.keys(D.screenpop));
-        }
-      } catch (e) {
-        console.warn("[WxccLastContactWidget] SDK discovery error:", e.message);
-      }
-    }
-
-    // =================================================================
-    // Subscribe to all relevant Desktop SDK events
-    // =================================================================
-    _subscribeToEvents() {
-      const ac = window.Desktop?.agentContact;
-      if (!ac) {
-        console.warn("[WxccLastContactWidget] Desktop.agentContact unavailable — cannot subscribe");
+    _debugLogObject(label, obj) {
+      if (!obj || typeof obj !== "object") {
+        console.log(`[WxccLastContactWidget] ${label}:`, obj);
         return;
       }
-
-      // List of event methods to try subscribing to
-      const events = [
-        { name: "addEventListener", eventName: "eAgentContact" },
-        { name: "addEventListener", eventName: "eAgentOfferContact" },
-        { name: "addEventListener", eventName: "eAgentContactAssigned" },
-        { name: "addEventListener", eventName: "eCallDataChanged" },
-        { name: "addEventListener", eventName: "eAgentContactEnded" },
-        { name: "addEventListener", eventName: "eAgentOfferConsult" },
-        { name: "addEventListener", eventName: "eAgentWrapup" },
-        { name: "addEventListener", eventName: "eAgentContactHeld" },
-        { name: "addEventListener", eventName: "eAgentContactUnHeld" }
-      ];
-
-      events.forEach(evt => {
-        try {
-          if (typeof ac.addEventListener === "function") {
-            ac.addEventListener(evt.eventName, (data) => {
-              console.log(`[WxccLastContactWidget] SDK Event: ${evt.eventName}`, data);
-              this._processContactData(data, evt.eventName);
-            });
-            console.log(`[WxccLastContactWidget] Subscribed to: ${evt.eventName}`);
-          }
-        } catch (e) {
-          console.log(`[WxccLastContactWidget] Could not subscribe to ${evt.eventName}:`, e.message);
+      const keys = Object.keys(obj);
+      console.log(`[WxccLastContactWidget] ${label} keys (${keys.length}):`, keys);
+      keys.forEach((k) => {
+        const v = obj[k];
+        const type = typeof v;
+        if (type === "object" && v !== null) {
+          const subKeys = Object.keys(v);
+          console.log(`[WxccLastContactWidget]   ${label}.${k} => [${type}] keys:`, subKeys);
+          // Go one more level deep for key objects
+          subKeys.forEach((sk) => {
+            const sv = v[sk];
+            const stype = typeof sv;
+            if (stype === "object" && sv !== null) {
+              console.log(`[WxccLastContactWidget]     ${label}.${k}.${sk} => [${stype}] keys:`, Object.keys(sv));
+            } else {
+              console.log(`[WxccLastContactWidget]     ${label}.${k}.${sk} => [${stype}]`, sv);
+            }
+          });
+        } else {
+          console.log(`[WxccLastContactWidget]   ${label}.${k} => [${type}]`, v);
         }
       });
-
-      // Also try the onChange pattern if addEventListener doesn't exist
-      if (typeof ac.addEventListener !== "function") {
-        console.log("[WxccLastContactWidget] No addEventListener — trying onChange patterns");
-        try {
-          if (typeof ac.onChange === "function") {
-            ac.onChange((data) => {
-              console.log("[WxccLastContactWidget] agentContact.onChange:", data);
-              this._processContactData(data, "onChange");
-            });
-            console.log("[WxccLastContactWidget] Subscribed to agentContact.onChange");
-          }
-        } catch (e) {
-          console.log("[WxccLastContactWidget] onChange not available:", e.message);
-        }
-      }
-
-      // Try to read any existing task data right now
-      this._probeExistingTasks();
     }
 
     // =================================================================
-    // Probe for any already-active tasks (e.g. page reloaded mid-call)
+    // SETTER 1: $STORE.agentContact (entire contact store)
     // =================================================================
-    _probeExistingTasks() {
-      const ac = window.Desktop?.agentContact;
-      if (!ac) return;
+    set agentContact(val) {
+      console.log("[WxccLastContactWidget] === SETTER: agentContact ===");
+      if (!val || typeof val !== "object") {
+        console.log("[WxccLastContactWidget] agentContact is null/empty:", val);
+        return;
+      }
+      this._debugLogObject("agentContact", val);
 
-      // Try getTaskMap
-      try {
-        if (typeof ac.getTaskMap === "function") {
-          const taskMap = ac.getTaskMap();
-          console.log("[WxccLastContactWidget] getTaskMap():", taskMap);
-          if (taskMap && typeof taskMap === "object") {
-            const entries = taskMap instanceof Map ? [...taskMap.entries()] : Object.entries(taskMap);
-            entries.forEach(([id, task]) => {
-              console.log(`[WxccLastContactWidget] Existing task ${id}:`, task);
-              this._processContactData(task, "getTaskMap");
-            });
+      // Try to find interaction data anywhere inside the store
+      if (val.taskSelected) {
+        console.log("[WxccLastContactWidget] agentContact.taskSelected found");
+        this._processContactData(val.taskSelected, "agentContact.taskSelected");
+      }
+      if (val.taskMap) {
+        console.log("[WxccLastContactWidget] agentContact.taskMap found");
+        this._processTaskMap(val.taskMap, "agentContact.taskMap");
+      }
+      if (val.outdialContactData) {
+        console.log("[WxccLastContactWidget] agentContact.outdialContactData found");
+        this._processContactData(val.outdialContactData, "agentContact.outdialContactData");
+      }
+      // Check for any key containing "task" or "contact" or "interaction"
+      Object.keys(val).forEach(k => {
+        const lower = k.toLowerCase();
+        if (lower.includes("task") || lower.includes("contact") || lower.includes("interaction") || lower.includes("preview")) {
+          console.log(`[WxccLastContactWidget] agentContact has relevant key: ${k}`);
+          if (val[k] && typeof val[k] === "object") {
+            this._processContactData(val[k], `agentContact.${k}`);
           }
         }
-      } catch (e) {
-        console.log("[WxccLastContactWidget] getTaskMap() failed:", e.message);
-      }
+      });
+    }
 
-      // Try getTask
-      try {
-        if (typeof ac.getTask === "function") {
-          const task = ac.getTask();
-          console.log("[WxccLastContactWidget] getTask():", task);
-          if (task) this._processContactData(task, "getTask");
-        }
-      } catch (e) {
-        console.log("[WxccLastContactWidget] getTask() failed:", e.message);
+    // =================================================================
+    // SETTER 2: $STORE.agentContact.taskMap
+    // =================================================================
+    set taskMap(val) {
+      console.log("[WxccLastContactWidget] === SETTER: taskMap ===");
+      if (!val || typeof val !== "object") {
+        console.log("[WxccLastContactWidget] taskMap is null/empty:", val);
+        return;
+      }
+      this._processTaskMap(val, "taskMap");
+    }
+
+    _processTaskMap(taskMap, source) {
+      this._debugLogObject(source, taskMap);
+      // taskMap could be a Map or a plain object
+      let entries;
+      if (taskMap instanceof Map) {
+        entries = [...taskMap.entries()];
+      } else {
+        entries = Object.entries(taskMap);
+      }
+      console.log(`[WxccLastContactWidget] [${source}] entries count:`, entries.length);
+      entries.forEach(([id, task]) => {
+        console.log(`[WxccLastContactWidget] [${source}] task ID: ${id}`);
+        this._processContactData(task, `${source}["${id}"]`);
+      });
+    }
+
+    // =================================================================
+    // SETTER 3: $STORE.agentContact.taskSelected.interaction
+    // =================================================================
+    set activeInteraction(val) {
+      console.log("[WxccLastContactWidget] === SETTER: activeInteraction ===");
+      if (!val || typeof val !== "object") {
+        console.log("[WxccLastContactWidget] activeInteraction is null/empty:", val);
+        return;
+      }
+      this._processContactData(val, "activeInteraction");
+    }
+
+    // =================================================================
+    // SETTER 4: $STORE.agentContact.outdialContactData
+    // =================================================================
+    set outdialData(val) {
+      console.log("[WxccLastContactWidget] === SETTER: outdialData ===");
+      if (!val || typeof val !== "object") {
+        console.log("[WxccLastContactWidget] outdialData is null/empty:", val);
+        return;
+      }
+      this._processContactData(val, "outdialData");
+    }
+
+    // =================================================================
+    // SETTER 5: $STORE.agentContact.taskSelected (original)
+    // =================================================================
+    set interactionData(val) {
+      console.log("[WxccLastContactWidget] === SETTER: interactionData ===");
+      if (!val) {
+        console.log("[WxccLastContactWidget] interactionData is null");
+        if (!this._currentDnis) this._clearDisplay();
+        return;
+      }
+      this._processContactData(val, "$STORE.taskSelected");
+    }
+
+    // =================================================================
+    // SETTER 6: $STORE.agentContact.isActiveCall
+    // =================================================================
+    set isCallInProgress(val) {
+      console.log("[WxccLastContactWidget] === SETTER: isCallInProgress ===", val);
+      if (!val) {
+        this._currentDnis = null;
+        this._clearDisplay();
       }
     }
 
@@ -265,12 +222,16 @@
       console.log(`[WxccLastContactWidget] [${source}] Processing contact data`);
       this._debugLogObject(`[${source}] data`, data);
 
-      // Navigate to the interaction object (could be nested in various ways)
+      // Navigate to the interaction object
       const interaction = data.interaction || data.data?.interaction || data.data || data;
-      this._debugLogObject(`[${source}] interaction`, interaction);
+      if (interaction !== data) {
+        this._debugLogObject(`[${source}] interaction`, interaction);
+      }
 
       const cad = interaction.callAssociatedData || interaction.CAD || {};
-      this._debugLogObject(`[${source}] CAD`, cad);
+      if (Object.keys(cad).length > 0) {
+        this._debugLogObject(`[${source}] CAD`, cad);
+      }
 
       const mediaProp = interaction.mediaProperties || data.mediaProperties || {};
       if (Object.keys(mediaProp).length > 0) {
@@ -367,55 +328,6 @@
     }
 
     // =================================================================
-    // $STORE property setters (fallback — kept for compatibility)
-    // =================================================================
-    set interactionData(val) {
-      console.log("[WxccLastContactWidget] === $STORE interactionData setter ===");
-      if (!val) {
-        console.log("[WxccLastContactWidget] $STORE val is null — no active task");
-        if (!this._currentDnis) this._clearDisplay();
-        return;
-      }
-      this._processContactData(val, "$STORE.taskSelected");
-    }
-
-    set isCallInProgress(val) {
-      console.log("[WxccLastContactWidget] isCallInProgress:", val);
-      if (val && !this._currentDnis) {
-        // Call started but no DNIS yet — try probing SDK
-        console.log("[WxccLastContactWidget] Call active, probing SDK for task data...");
-        setTimeout(() => this._probeExistingTasks(), 500);
-        setTimeout(() => this._probeExistingTasks(), 1500);
-        setTimeout(() => this._probeExistingTasks(), 3000);
-      }
-      if (!val) {
-        this._currentDnis = null;
-        this._clearDisplay();
-      }
-    }
-
-    // =================================================================
-    // Debug helper
-    // =================================================================
-    _debugLogObject(label, obj) {
-      if (!obj || typeof obj !== "object") {
-        console.log(`[WxccLastContactWidget] ${label}:`, obj);
-        return;
-      }
-      const keys = Object.keys(obj);
-      console.log(`[WxccLastContactWidget] ${label} keys (${keys.length}):`, keys);
-      keys.forEach((k) => {
-        const v = obj[k];
-        const type = typeof v;
-        if (type === "object" && v !== null) {
-          console.log(`[WxccLastContactWidget]   ${label}.${k} => [${type}] keys:`, Object.keys(v));
-        } else {
-          console.log(`[WxccLastContactWidget]   ${label}.${k} => [${type}]`, v);
-        }
-      });
-    }
-
-    // =================================================================
     // Display helpers
     // =================================================================
     _setDnis(dnis) {
@@ -438,5 +350,5 @@
   }
 
   customElements.define("wxcc-last-contact-widget", WxccLastContactWidget);
-  console.log("[WxccLastContactWidget] Registered successfully v7");
+  console.log("[WxccLastContactWidget] Registered successfully v8");
 })();
