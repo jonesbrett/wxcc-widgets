@@ -1,4 +1,4 @@
-// version11 - DNIS display + Airtable CRM lookup for Last Contact Date
+// version12 - Handles campaign contact skipping (task change detection)
 (function () {
   if (customElements.get("wxcc-last-contact-widget")) return;
 
@@ -74,6 +74,10 @@
   const AIRTABLE_API_KEY = "patYqdB2ZUbYN9aCP.b3a72fd1165c7d269f81e802503859e13792dbd095447b34f3c60957ecbc68e8";
   const AIRTABLE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}`;
 
+  // Poll intervals
+  const POLL_FAST = 500;   // while searching for DNIS
+  const POLL_SLOW = 2000;  // while monitoring for task changes
+
   class WxccLastContactWidget extends HTMLElement {
     constructor() {
       super();
@@ -85,14 +89,16 @@
       this._contactLabelEl = this.shadowRoot.getElementById("lc-contact-label");
       this._contactEl = this.shadowRoot.getElementById("lc-contact");
       this._currentDnis = null;
+      this._currentTaskId = null;
       this._agentContactRef = null;
       this._taskMapRef = null;
       this._pollTimer = null;
-      console.log("[WxccLastContactWidget] Constructor (v11)");
+      this._pollRate = POLL_FAST;
+      console.log("[WxccLastContactWidget] Constructor (v12)");
     }
 
     connectedCallback() {
-      console.log("[WxccLastContactWidget] Mounted (v11)");
+      console.log("[WxccLastContactWidget] Mounted (v12)");
     }
 
     disconnectedCallback() {
@@ -101,29 +107,11 @@
     }
 
     // =================================================================
-    // Debug helper
-    // =================================================================
-    _debugLogObject(label, obj) {
-      if (!obj || typeof obj !== "object") {
-        console.log(`[WXCC] ${label}:`, obj);
-        return;
-      }
-      try {
-        const keys = Object.keys(obj);
-        console.log(`[WXCC] ${label} [${keys.length} keys]:`, keys);
-      } catch (e) {
-        console.log(`[WXCC] ${label}: keys failed`, obj);
-      }
-    }
-
-    // =================================================================
     // MobX ObservableMap reader
     // =================================================================
     _tryReadMap(mapObj, label) {
       if (!mapObj) return [];
       const tasks = [];
-
-      try { console.log(`[WXCC] ${label}.size =>`, mapObj.size); } catch (e) {}
 
       try {
         if (typeof mapObj.toJSON === "function") {
@@ -134,11 +122,15 @@
         }
       } catch (e) {}
 
+      if (tasks.length > 0) return tasks;
+
       try {
         if (typeof mapObj.forEach === "function") {
           mapObj.forEach((value, key) => { tasks.push({ id: key, task: value }); });
         }
       } catch (e) {}
+
+      if (tasks.length > 0) return tasks;
 
       try {
         if (typeof mapObj.entries === "function") {
@@ -148,34 +140,17 @@
         }
       } catch (e) {}
 
-      try {
-        if (typeof mapObj.values === "function") {
-          let idx = 0;
-          for (const value of mapObj.values()) {
-            tasks.push({ id: `val_${idx}`, task: value });
-            idx++;
-          }
-        }
-      } catch (e) {}
+      if (tasks.length > 0) return tasks;
 
       try {
         if (typeof mapObj.keys === "function" && typeof mapObj.get === "function") {
-          const keyArr = [];
-          for (const k of mapObj.keys()) { keyArr.push(k); }
-          keyArr.forEach(k => {
+          for (const k of mapObj.keys()) {
             try { tasks.push({ id: k, task: mapObj.get(k) }); } catch (e) {}
-          });
+          }
         }
       } catch (e) {}
 
-      try {
-        const arr = Array.from(mapObj);
-        arr.forEach(entry => {
-          if (Array.isArray(entry) && entry.length === 2) {
-            tasks.push({ id: entry[0], task: entry[1] });
-          }
-        });
-      } catch (e) {}
+      if (tasks.length > 0) return tasks;
 
       try {
         if (mapObj.data_ && mapObj.data_ instanceof Map) {
@@ -190,30 +165,21 @@
     }
 
     // =================================================================
-    // SETTER: $STORE.agentContact
+    // SETTERS
     // =================================================================
     set agentContact(val) {
       if (!val || typeof val !== "object") return;
       this._agentContactRef = val;
-      console.log("[WXCC] agentContact ref saved");
     }
 
-    // =================================================================
-    // SETTER: $STORE.agentContact.taskMap
-    // =================================================================
     set taskMap(val) {
-      console.log("[WXCC] === SETTER: taskMap ===");
       if (!val) return;
       this._taskMapRef = val;
       const tasks = this._tryReadMap(val, "taskMap");
-      tasks.forEach(({ id, task }) => this._processTask(task, `taskMap.init["${id}"]`));
+      tasks.forEach(({ id, task }) => this._processTask(task, "taskMap.init", id));
     }
 
-    // =================================================================
-    // SETTER: $STORE.agentContact.taskSelected
-    // =================================================================
     set interactionData(val) {
-      console.log("[WXCC] === SETTER: interactionData ===");
       if (!val) {
         if (!this._currentDnis) this._clearDisplay();
         return;
@@ -221,97 +187,152 @@
       this._processTask(val, "interactionData");
     }
 
-    // =================================================================
-    // SETTER: $STORE.agentContact.taskSelected.interaction
-    // =================================================================
     set activeInteraction(val) {
-      console.log("[WXCC] === SETTER: activeInteraction ===");
       if (!val) return;
       this._processTask({ interaction: val }, "activeInteraction");
     }
 
-    // =================================================================
-    // SETTER: $STORE.agentContact.isActiveCall
-    // =================================================================
     set isCallInProgress(val) {
-      console.log("[WXCC] === isCallInProgress ===", val);
+      console.log("[WXCC] isCallInProgress:", val);
       if (val) {
         this._startPolling();
       } else {
         this._stopPolling();
         this._currentDnis = null;
+        this._currentTaskId = null;
         this._clearDisplay();
       }
     }
 
     // =================================================================
-    // Poll for task data when call is active
+    // Polling — runs the entire time a call is active
     // =================================================================
     _startPolling() {
       if (this._pollTimer) return;
-      let attempts = 0;
-      const maxAttempts = 20;
+      this._pollRate = POLL_FAST;
 
-      console.log("[WXCC] Starting poll for task data...");
+      console.log("[WXCC] Polling started (fast mode)");
 
       const poll = () => {
-        attempts++;
-        if (this._currentDnis) {
-          this._stopPolling();
-          return;
-        }
-        if (attempts > maxAttempts) {
-          console.log("[WXCC] Max poll attempts reached");
-          this._stopPolling();
-          return;
-        }
-
-        console.log(`[WXCC] Poll attempt ${attempts}/${maxAttempts}`);
-
         const ac = this._agentContactRef;
-        if (ac) {
-          try {
-            if (ac.taskSelected) {
-              this._processTask(ac.taskSelected, "poll.taskSelected");
-            }
-          } catch (e) {}
+        if (!ac) return;
 
-          try {
-            const tm = ac.taskMap || this._taskMapRef;
-            if (tm) {
-              const tasks = this._tryReadMap(tm, `poll.taskMap[${attempts}]`);
-              tasks.forEach(({ id, task }) => this._processTask(task, `poll.taskMap["${id}"]`));
-            }
-          } catch (e) {}
+        // --- Read all current tasks from taskMap ---
+        let currentTasks = [];
+        try {
+          const tm = ac.taskMap || this._taskMapRef;
+          if (tm) {
+            currentTasks = this._tryReadMap(tm, "poll.taskMap");
+          }
+        } catch (e) {}
 
-          try {
-            ["outdialContactData", "previewContactData", "contactData",
-             "currentContact", "activeContact", "campaignContact"
-            ].forEach(k => {
-              try {
-                if (ac[k]) { this._processTask(ac[k], `poll.ac.${k}`); }
-              } catch (e) {}
-            });
-          } catch (e) {}
+        // --- Detect if previous task has disappeared (contact skipped) ---
+        if (this._currentTaskId && currentTasks.length > 0) {
+          const stillPresent = currentTasks.some(({ id }) => id === this._currentTaskId);
+          if (!stillPresent) {
+            console.log(`[WXCC] Task ${this._currentTaskId} gone — contact skipped, resetting`);
+            this._currentDnis = null;
+            this._currentTaskId = null;
+            this._hideContactSection();
+            this._dnisEl.textContent = "Loading...";
+            this._dnisEl.className = "lc-value empty";
+            this._wrapperEl.classList.remove("no-call");
+            this._switchPollRate(POLL_FAST);
+          }
         }
+
+        // --- Process all current tasks ---
+        currentTasks.forEach(({ id, task }) => {
+          this._processTask(task, "poll.taskMap", id);
+        });
+
+        // --- Also try taskSelected ---
+        try {
+          if (ac.taskSelected) {
+            this._processTask(ac.taskSelected, "poll.taskSelected");
+          }
+        } catch (e) {}
       };
 
       poll();
-      this._pollTimer = setInterval(poll, 500);
+      this._pollTimer = setInterval(poll, this._pollRate);
+    }
+
+    _switchPollRate(newRate) {
+      if (this._pollRate === newRate) return;
+      this._pollRate = newRate;
+      if (this._pollTimer) {
+        clearInterval(this._pollTimer);
+        const ac = this._agentContactRef;
+        this._pollTimer = setInterval(() => {
+          let currentTasks = [];
+          try {
+            const tm = ac?.taskMap || this._taskMapRef;
+            if (tm) currentTasks = this._tryReadMap(tm, "poll.taskMap");
+          } catch (e) {}
+
+          if (this._currentTaskId && currentTasks.length > 0) {
+            const stillPresent = currentTasks.some(({ id }) => id === this._currentTaskId);
+            if (!stillPresent) {
+              console.log(`[WXCC] Task ${this._currentTaskId} gone — contact skipped, resetting`);
+              this._currentDnis = null;
+              this._currentTaskId = null;
+              this._hideContactSection();
+              this._dnisEl.textContent = "Loading...";
+              this._dnisEl.className = "lc-value empty";
+              this._wrapperEl.classList.remove("no-call");
+              this._switchPollRate(POLL_FAST);
+              return;
+            }
+          }
+
+          currentTasks.forEach(({ id, task }) => {
+            this._processTask(task, "poll.taskMap", id);
+          });
+
+          try {
+            if (ac?.taskSelected) {
+              this._processTask(ac.taskSelected, "poll.taskSelected");
+            }
+          } catch (e) {}
+        }, newRate);
+      }
+      console.log(`[WXCC] Poll rate switched to ${newRate}ms`);
     }
 
     _stopPolling() {
       if (this._pollTimer) {
         clearInterval(this._pollTimer);
         this._pollTimer = null;
+        console.log("[WXCC] Polling stopped");
       }
     }
 
     // =================================================================
-    // Process a task — DNIS-ONLY extraction (no ANI)
+    // Process a task — DNIS-ONLY extraction with task ID tracking
     // =================================================================
-    _processTask(task, source) {
+    _processTask(task, source, taskId = null) {
       if (!task || typeof task !== "object") return;
+
+      // --- Detect task change ---
+      if (taskId && this._currentTaskId && taskId !== this._currentTaskId) {
+        console.log(`[WXCC] Task changed: ${this._currentTaskId} -> ${taskId}`);
+        this._currentDnis = null;
+        this._currentTaskId = taskId;
+        this._hideContactSection();
+        this._dnisEl.textContent = "Loading...";
+        this._dnisEl.className = "lc-value empty";
+        this._wrapperEl.classList.remove("no-call");
+      }
+
+      // --- Set task ID if first task ---
+      if (taskId && !this._currentTaskId) {
+        this._currentTaskId = taskId;
+        console.log(`[WXCC] First task ID set: ${taskId}`);
+      }
+
+      // --- Skip if we already have DNIS for this task ---
+      if (this._currentDnis) return;
 
       let dnis = null;
 
@@ -368,11 +389,11 @@
                task.outDialNumber || task.dialNumber || task.destination || null;
       }
 
-      if (dnis && dnis !== this._currentDnis) {
-        console.log(`[WXCC] [${source}] DNIS found: ${dnis}`);
+      if (dnis) {
+        console.log(`[WXCC] [${source}] DNIS found: ${dnis} (task: ${taskId || "unknown"})`);
         this._currentDnis = dnis;
         this._setDnis(dnis);
-        this._stopPolling();
+        this._switchPollRate(POLL_SLOW);
         this._performCrmLookup(dnis);
       }
     }
@@ -381,14 +402,12 @@
     // Airtable CRM Lookup
     // =================================================================
     _performCrmLookup(dnis) {
-      console.log("[WXCC] Starting CRM lookup for DNIS:", dnis);
+      console.log("[WXCC] CRM lookup for DNIS:", dnis);
 
-      // Show loading state
       this._showContactSection();
       this._contactEl.textContent = "Looking up...";
       this._contactEl.className = "lc-contact-loading";
 
-      // Build Airtable filter URL
       const filter = `{phoneNumber} = '${dnis}'`;
       const params = new URLSearchParams({ filterByFormula: filter });
       const url = `${AIRTABLE_URL}?${params.toString()}`;
@@ -403,7 +422,6 @@
         }
       })
         .then(resp => {
-          console.log("[WXCC] CRM response status:", resp.status);
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           return resp.json();
         })
@@ -411,7 +429,7 @@
           console.log("[WXCC] CRM response:", JSON.stringify(data));
 
           if (!data.records || data.records.length === 0) {
-            console.log("[WXCC] No CRM record found for DNIS:", dnis);
+            console.log("[WXCC] No CRM record for:", dnis);
             this._contactEl.textContent = "No record";
             this._contactEl.className = "lc-contact-none";
             return;
@@ -419,7 +437,7 @@
 
           const fields = data.records[0].fields;
           const lastContactStr = fields.lastContact;
-          console.log("[WXCC] lastContact field:", lastContactStr);
+          console.log("[WXCC] lastContact:", lastContactStr);
 
           if (!lastContactStr) {
             this._contactEl.textContent = "Never contacted";
@@ -427,14 +445,11 @@
             return;
           }
 
-          // Parse and format the date
           const lastContactDate = new Date(lastContactStr + "T00:00:00");
           const today = new Date();
           today.setHours(0, 0, 0, 0);
-
           const isToday = lastContactDate.getTime() === today.getTime();
 
-          // Format: "04 Jun 2026"
           const formatted = lastContactDate.toLocaleDateString("en-GB", {
             day: "2-digit",
             month: "short",
@@ -444,7 +459,7 @@
           if (isToday) {
             this._contactEl.textContent = `${formatted} (Today)`;
             this._contactEl.className = "lc-contact-today";
-            console.log("[WXCC] Contact was TODAY");
+            console.log("[WXCC] Contacted TODAY");
           } else {
             this._contactEl.textContent = formatted;
             this._contactEl.className = "lc-contact-past";
@@ -489,5 +504,5 @@
   }
 
   customElements.define("wxcc-last-contact-widget", WxccLastContactWidget);
-  console.log("[WxccLastContactWidget] Registered successfully v11");
+  console.log("[WxccLastContactWidget] Registered successfully v12");
 })();
