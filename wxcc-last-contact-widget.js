@@ -71,7 +71,7 @@
   // Airtable configuration
   const AIRTABLE_BASE = "appPmucupoffk2wmY";
   const AIRTABLE_TABLE = "Clients";
-  const AIRTABLE_API_KEY = "patYqdB2ZUbYN9aCP.b3a72fd1165c7d269f81e802503859e13792dbd095447b34f3c60957ecbc68e8";
+  const AIRTABLE_API_KEY = "patYqdB2ZUbYN9aCP.b3a72fd1165c7d269f81e802503859e13792dbd095447b34f3c60957ecbc68e";
   const AIRTABLE_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}`;
 
   // Poll intervals
